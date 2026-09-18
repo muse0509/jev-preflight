@@ -50,6 +50,22 @@ func outputProcess(ctx context.Context, mode, value string) *exec.Cmd {
 	return exec.CommandContext(ctx, os.Args[0], "-test.run=^TestOutputProcess$", "--", mode, value)
 }
 
+func assertProcessWaited(t *testing.T, cmd *exec.Cmd, wantSuccess bool) {
+	t.Helper()
+	// Run obtains ProcessState only after Process.Wait finishes the OS wait and
+	// releases process resources. Signaling that released handle is not portable.
+	if cmd.Process == nil || cmd.ProcessState == nil {
+		t.Fatal("child process wait did not complete")
+	}
+	state := cmd.ProcessState
+	if cmd.Process.Pid <= 0 || state.Pid() != cmd.Process.Pid {
+		t.Fatal("completed wait does not identify the started child")
+	}
+	if state.Success() != wantSuccess || (state.ExitCode() == 0) != wantSuccess {
+		t.Fatalf("unexpected child termination status: success=%t exit=%d", state.Success(), state.ExitCode())
+	}
+}
+
 func TestBoundedOutputBoundary(t *testing.T) {
 	const limit = 1024
 	for _, size := range []int{limit - 1, limit, limit + 1} {
@@ -73,9 +89,7 @@ func TestBoundedOutputBoundary(t *testing.T) {
 			} else if err != nil || len(out) != size {
 				t.Fatal("output at or below the limit was not preserved")
 			}
-			if cmd.ProcessState == nil || !errors.Is(cmd.Process.Kill(), os.ErrProcessDone) {
-				t.Fatal("child process was not reaped")
-			}
+			assertProcessWaited(t, cmd, size <= limit)
 		})
 	}
 }
@@ -119,9 +133,7 @@ func TestCanceledOutputReapsChild(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("canceled child did not terminate")
 	}
-	if cmd.ProcessState == nil || !errors.Is(cmd.Process.Kill(), os.ErrProcessDone) {
-		t.Fatal("canceled child was not reaped")
-	}
+	assertProcessWaited(t, cmd, false)
 }
 
 func TestCommandErrorsDiscardPrivateDiagnostics(t *testing.T) {
