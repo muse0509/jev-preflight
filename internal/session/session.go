@@ -2,6 +2,7 @@
 package session
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -170,21 +172,57 @@ func (s *Store) Lock() (unlock func(), acquired bool, err error) {
 		return nil, false, err
 	}
 	path := filepath.Join(s.base, ".locks", s.owner.PromptHash)
+	unlock, acquired, err = acquireDirectoryLock(path)
+	if err != nil {
+		return nil, false, errors.New("cannot acquire session lock")
+	}
+	return unlock, acquired, nil
+}
+
+func acquireDirectoryLock(path string) (unlock func(), acquired bool, err error) {
 	if err := os.Mkdir(path, 0700); errors.Is(err, os.ErrExist) {
 		return func() {}, false, nil
 	} else if err != nil {
-		return nil, false, errors.New("cannot acquire session lock")
+		return nil, false, err
 	}
-	info, err := os.Lstat(path)
+	// File.Stat captures the Windows file identity before the name is reused.
+	directory, err := os.Open(path)
 	if err != nil {
-		return nil, false, errors.New("cannot inspect session lock")
+		return nil, false, err
 	}
+	info, statErr := directory.Stat()
+	closeErr := directory.Close()
+	if statErr != nil {
+		return nil, false, statErr
+	}
+	if closeErr != nil {
+		return nil, false, closeErr
+	}
+	var once sync.Once
 	return func() {
-		current, err := os.Lstat(path)
-		if err == nil && current.IsDir() && os.SameFile(info, current) {
-			_ = os.Remove(path)
-		}
+		once.Do(func() { releaseDirectoryLock(path, info) })
 	}, true, nil
+}
+
+func releaseDirectoryLock(path string, owner os.FileInfo) {
+	current, err := os.Lstat(path)
+	if err != nil || !current.IsDir() || !os.SameFile(owner, current) {
+		return
+	}
+	// Windows deletion can wait for open handles. Retire the name first so a
+	// pending deletion cannot prevent another process from acquiring the lock.
+	var identity [16]byte
+	if _, err := rand.Read(identity[:]); err != nil {
+		return
+	}
+	destination := filepath.Join(filepath.Dir(path), ".released-"+hex.EncodeToString(identity[:]))
+	if _, err := os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err := os.Rename(path, destination); err != nil {
+		return
+	}
+	_ = os.Remove(destination)
 }
 
 // Cleanup removes only the positively identified prompt directory.
@@ -213,12 +251,14 @@ func (s *Store) Notice(class string) (bool, error) {
 	}
 	directory := filepath.Join(s.base, ".notices")
 	lock := filepath.Join(directory, s.owner.SessionHash+".lock")
-	if err := os.Mkdir(lock, 0700); errors.Is(err, os.ErrExist) {
-		return false, nil
-	} else if err != nil {
+	unlock, acquired, err := acquireDirectoryLock(lock)
+	if err != nil {
 		return false, errors.New("cannot acquire notice lock")
 	}
-	defer os.Remove(lock)
+	if !acquired {
+		return false, nil
+	}
+	defer unlock()
 	var ledger noticeLedger
 	name := s.owner.SessionHash + ".json"
 	if err := readJSON(filepath.Join(directory, name), &ledger); errors.Is(err, os.ErrNotExist) {

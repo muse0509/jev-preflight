@@ -304,6 +304,50 @@ func TestConcurrentLockHasOneWinner(t *testing.T) {
 	finished.Wait()
 }
 
+func TestLockReleasePreservesReplacement(t *testing.T) {
+	store := mustOpen(t, testOptions(t, false))
+	unlock, acquired, err := store.Lock()
+	if err != nil || !acquired {
+		t.Fatalf("initial lock: %v", err)
+	}
+	path := filepath.Join(store.base, ".locks", store.owner.PromptHash)
+	if err := os.Rename(path, path+"-previous"); err != nil {
+		t.Fatal(err)
+	}
+	unlockReplacement, acquired, err := store.Lock()
+	if err != nil || !acquired {
+		t.Fatalf("replacement lock: %v", err)
+	}
+	defer unlockReplacement()
+	unlock()
+	if _, acquired, err := store.Lock(); err != nil || acquired {
+		t.Fatal("old owner released the replacement lock")
+	}
+}
+
+func TestLockReleaseCanImmediatelyReuseName(t *testing.T) {
+	store := mustOpen(t, testOptions(t, false))
+	unlock, acquired, err := store.Lock()
+	if err != nil || !acquired {
+		t.Fatalf("initial lock: %v", err)
+	}
+	unlock()
+	unlockNext, acquired, err := store.Lock()
+	if err != nil || !acquired {
+		t.Fatalf("lock after release: %v", err)
+	}
+	defer unlockNext()
+	unlock()
+	if _, acquired, err := store.Lock(); err != nil || acquired {
+		t.Fatal("repeated release removed the next owner's lock")
+	}
+	unlockNext()
+	entries, err := os.ReadDir(filepath.Join(store.base, ".locks"))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("released locks remain: %v %v", entries, err)
+	}
+}
+
 func TestNoticesPersistAcrossPromptsAndCleanup(t *testing.T) {
 	options := testOptions(t, false)
 	first := mustOpen(t, options)
@@ -342,25 +386,37 @@ func TestNoticesPersistAcrossPromptsAndCleanup(t *testing.T) {
 }
 
 func TestConcurrentNoticeEmitsAtMostOnce(t *testing.T) {
-	store := mustOpen(t, testOptions(t, false))
-	var emitted atomic.Int32
-	var group sync.WaitGroup
-	for i := 0; i < 24; i++ {
-		group.Add(1)
-		go func() {
-			defer group.Done()
-			yes, err := store.Notice("api")
-			if err != nil {
-				t.Errorf("notice: %v", err)
-			}
-			if yes {
-				emitted.Add(1)
-			}
-		}()
+	options := testOptions(t, false)
+	stores := make([]*Store, 24)
+	for i := range stores {
+		stores[i] = mustOpen(t, options)
 	}
-	group.Wait()
-	if emitted.Load() != 1 {
-		t.Fatalf("notice emissions = %d", emitted.Load())
+	for _, class := range []string{"api", "snapshot", "config", "state"} {
+		var emitted atomic.Int32
+		var group sync.WaitGroup
+		start := make(chan struct{})
+		for _, store := range stores {
+			group.Add(1)
+			go func(store *Store) {
+				defer group.Done()
+				<-start
+				yes, err := store.Notice(class)
+				if err != nil {
+					t.Errorf("notice: %v", err)
+				}
+				if yes {
+					emitted.Add(1)
+				}
+			}(store)
+		}
+		close(start)
+		group.Wait()
+		if emitted.Load() != 1 {
+			t.Fatalf("%s notice emissions = %d", class, emitted.Load())
+		}
+		if yes, err := stores[0].Notice(class); err != nil || yes {
+			t.Fatalf("persisted %s notice emitted twice: %v", class, err)
+		}
 	}
 }
 

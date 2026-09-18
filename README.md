@@ -228,6 +228,9 @@ Local verification record (2026-09-19), macOS arm64, Go 1.26.7, Apple Git 2.50.1
 - Current-platform executable and development launcher `version` invocation.
 - Universal zip assembly, unpacked layout, marketplace/sidecar SHA-256 checks,
   repeated-package digest equality, and its macOS arm64 launcher invocation.
+- Rebuilding all six binaries and the zip from two separate source directories,
+  without Git metadata and with different locale/timezone settings, gives the
+  same pinned digest; one source path includes spaces.
 - Git index, refs, object inventory/content/mtime and status invariants;
   fail-open API failures; zero-request no-ops; exactly one risky continuation.
 
@@ -236,14 +239,21 @@ servers; they never call the real TypeSafe endpoint. CI runs quality/race checks
 Ubuntu/macOS/Windows tests, six-target static builds, and strict packaging on
 Ubuntu to compare its archive with the marketplace pin. A configured CI job is
 not evidence of a completed run. Cross-compilation is not runtime verification.
-Linux, Windows, and other CPU execution of this revision have not been verified
-locally. The [previous CI run](https://github.com/muse0509/jev-preflight/actions/runs/35356499388)
-at `bfd1ddbc` passed Ubuntu/macOS tests, quality checks, and all six cross-builds,
-but failed the Windows launcher simulation because PATH-based fake `uname`
-selection used the host executable. The revised tests define a Bash function, cover all
-six mappings and unsupported platforms, and launch a native test executable via
-both runtime locations. Windows results require the next GitHub Actions run;
-local simulation is not Windows runtime evidence.
+Local runtime execution is limited to macOS arm64. The
+[CI push run](https://github.com/muse0509/jev-preflight/actions/runs/35361980873)
+at `98e4564` passed all 11 jobs on 2026-09-19 (JST), including Linux amd64,
+macOS arm64, and Windows amd64 platform tests, quality/race checks, all six
+cross-builds, and Ubuntu packaging with the same locally pinned archive SHA.
+The launcher tests cover all six mappings, unsupported platforms, literal
+arguments, and native test executables in both runtime locations; missing Bash
+fails the tests. Other OS/architecture combinations remain cross-build-only.
+
+A concurrent PR run exposed an intermittent Windows notice-lock release race.
+Lock release now renames the owned directory before deleting it, avoiding reuse
+of a name pending deletion. Regression tests keep an old Windows directory
+handle open while acquiring its successor. Check the
+[current PR checks](https://github.com/muse0509/jev-preflight/pull/1/checks)
+for the exact revision; all jobs must pass before release.
 
 The local Claude Code CLI is 2.1.221, below the required 2.1.257. Marketplace and
 unpacked-plugin validation were **not run for this revision**. `make plugin-validate`

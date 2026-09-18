@@ -9,7 +9,7 @@
       "source": {
         "source": "archive",
         "url": "https://github.com/muse0509/jev-preflight/releases/download/v0.1.0/jev-preflight-plugin-v0.1.0.zip",
-        "sha256": "daba1bdf86b0a38f49c592158211bbf01c55c582c1d92c861fb1ebf3efa027c7"
+        "sha256": "33cdc0233ff508b384282d49cc05cae85f168889188fb1896a3d7ce7c1cea102"
       },
       "defaultEnabled": false
     }
