@@ -17,6 +17,7 @@ type Input struct {
 	HookEventName   string           `json:"hook_event_name"`
 	StopHookActive  *bool            `json:"stop_hook_active"`
 	BackgroundTasks []BackgroundTask `json:"background_tasks"`
+	SessionCrons    []struct{}       `json:"session_crons"`
 }
 
 type BackgroundTask struct {
@@ -33,7 +34,7 @@ type SpecificOutput struct {
 	AdditionalContext string `json:"additionalContext"`
 }
 
-// Decode intentionally has no prompt, transcript, or assistant message fields.
+// Decode intentionally has no prompt, transcript, assistant message, or cron body fields.
 func Decode(r io.Reader, event string) (Input, error) {
 	var in Input
 	decoder := json.NewDecoder(io.LimitReader(r, (4<<20)+1))
@@ -59,6 +60,9 @@ func Decode(r io.Reader, event string) (Input, error) {
 }
 
 func (in Input) HasBackgroundWork() bool {
+	if len(in.SessionCrons) != 0 {
+		return true
+	}
 	for _, task := range in.BackgroundTasks {
 		switch task.Status {
 		case "completed", "failed", "killed", "cancelled", "stopped":

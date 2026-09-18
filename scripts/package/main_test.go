@@ -6,15 +6,28 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func fixture(t *testing.T) string {
+	t.Helper()
+	root := unpinnedFixture(t)
+	result, err := buildArchive(root, "v0.1.0", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setMarketplacePin(t, root, &result.SHA256)
+	return root
+}
+
+func unpinnedFixture(t *testing.T) string {
 	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -32,6 +45,31 @@ func fixture(t *testing.T) string {
 		writeFixture(t, root, "dist/"+target+"/"+binaryName(target), fixtureBinary(target))
 	}
 	return root
+}
+
+func setMarketplacePin(t *testing.T, root string, pin *string) {
+	t.Helper()
+	name := ".claude-plugin/marketplace.json"
+	body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(body, &document); err != nil {
+		t.Fatal(err)
+	}
+	plugin := document["plugins"].([]any)[0].(map[string]any)
+	source := plugin["source"].(map[string]any)
+	if pin == nil {
+		delete(source, "sha256")
+	} else {
+		source["sha256"] = *pin
+	}
+	body, err = json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, root, name, body)
 }
 
 func writeFixture(t *testing.T, root, name string, body []byte) {
@@ -148,6 +186,77 @@ func TestArchiveRoundTripAllPlatforms(t *testing.T) {
 	again, err := os.ReadFile(second.Archive)
 	if err != nil || !bytes.Equal(archive, again) {
 		t.Fatal("archive bytes changed for identical inputs")
+	}
+}
+
+func TestArchiveIndependentOfSourceRootMetadataAndLocale(t *testing.T) {
+	var firstArchive, firstChecksum []byte
+	var pin string
+	for i, environment := range []struct {
+		timezone, locale string
+		mode             os.FileMode
+		modified         time.Time
+	}{
+		{"Pacific/Honolulu", "C", 0600, time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)},
+		{"Asia/Tokyo", "ja_JP.UTF-8", 0755, time.Date(2024, 9, 18, 17, 16, 15, 0, time.FixedZone("JST", 9*60*60))},
+	} {
+		root := unpinnedFixture(t)
+		t.Setenv("TZ", environment.timezone)
+		t.Setenv("LANG", environment.locale)
+		t.Setenv("LC_ALL", environment.locale)
+		paths := append([]string(nil), sourcePaths...)
+		paths = append(paths, ".claude-plugin/marketplace.json")
+		for _, target := range targets {
+			paths = append(paths, "dist/"+target+"/"+binaryName(target))
+		}
+		for _, name := range paths {
+			path := filepath.Join(root, filepath.FromSlash(name))
+			if err := os.Chmod(path, environment.mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(path, environment.modified, environment.modified); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if i == 0 {
+			prepared, err := buildArchive(root, "v0.1.0", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pin = prepared.SHA256
+		}
+		// Both independent roots must satisfy the first archive's exact pin.
+		setMarketplacePin(t, root, &pin)
+		result, err := packageArchive(root, "v0.1.0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		archive, err := os.ReadFile(result.Archive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		checksum, err := os.ReadFile(result.Checksum)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			firstArchive, firstChecksum = archive, checksum
+		} else if !bytes.Equal(archive, firstArchive) || !bytes.Equal(checksum, firstChecksum) || result.SHA256 != pin {
+			t.Fatal("source location, metadata, timezone, or locale changed archive bytes")
+		}
+		reader, err := zip.OpenReader(result.Archive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, file := range reader.File {
+			if file.Method != zip.Deflate || !file.Modified.Equal(time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)) || file.Mode().Perm() != archiveMode(file.Name) {
+				reader.Close()
+				t.Fatal("archive compression, timestamp, or mode depends on source metadata")
+			}
+		}
+		if err := reader.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -282,5 +391,91 @@ func TestPreserveUnexpectedUnpackedFiles(t *testing.T) {
 	}
 	if b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name))); err != nil || string(b) != "preserve" {
 		t.Fatal("unexpected user file changed")
+	}
+}
+
+func TestPreparePinAndStrictRepackageAreIdentical(t *testing.T) {
+	root := unpinnedFixture(t)
+	marketplace := filepath.Join(root, ".claude-plugin", "marketplace.json")
+	before, err := os.ReadFile(marketplace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := buildArchive(root, "v0.1.0", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(marketplace)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("pin preparation must never modify marketplace source")
+	}
+	archive, err := os.ReadFile(prepared.Archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := sha256.Sum256(archive)
+	if prepared.SHA256 != hex.EncodeToString(actual[:]) || !sha256Pattern.MatchString(prepared.SHA256) {
+		t.Fatal("prepared digest does not describe the generated archive")
+	}
+	setMarketplacePin(t, root, &prepared.SHA256)
+	pinnedSource, err := os.ReadFile(marketplace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	strict, err := packageArchive(root, "v0.1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := os.ReadFile(strict.Archive)
+	if err != nil || !bytes.Equal(archive, verified) || strict.SHA256 != prepared.SHA256 {
+		t.Fatal("pin update changed the archive bytes")
+	}
+	afterStrict, err := os.ReadFile(marketplace)
+	if err != nil || !bytes.Equal(pinnedSource, afterStrict) {
+		t.Fatal("normal packaging must never modify marketplace source")
+	}
+}
+
+func TestStrictPackageRejectsMissingInvalidOrMismatchedPin(t *testing.T) {
+	for _, tt := range []struct{ name, pin string }{
+		{"missing", ""},
+		{"empty", ""},
+		{"short", strings.Repeat("a", 63)},
+		{"long", strings.Repeat("a", 65)},
+		{"uppercase", strings.Repeat("A", 64)},
+		{"nonhex", strings.Repeat("g", 64)},
+		{"mismatch", strings.Repeat("0", 64)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := fixture(t)
+			if tt.name == "missing" {
+				setMarketplacePin(t, root, nil)
+			} else {
+				setMarketplacePin(t, root, &tt.pin)
+			}
+			if _, err := packageArchive(root, "v0.1.0"); err == nil || !strings.Contains(err.Error(), "source.sha256") {
+				t.Fatalf("pin was not rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestPinMismatchDoesNotReplacePreviouslyVerifiedArchive(t *testing.T) {
+	root := fixture(t)
+	initial, err := packageArchive(root, "v0.1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(initial.Archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, root, "README.md", []byte("changed after pinning\n"))
+	if _, err := packageArchive(root, "v0.1.0"); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("changed artifact was not rejected: %v", err)
+	}
+	after, err := os.ReadFile(initial.Archive)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("failed verification replaced the existing archive")
 	}
 }

@@ -23,6 +23,7 @@ import (
 const maxFileBytes = 64 << 20
 
 var versionPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 var sourcePaths = []string{
 	".claude-plugin/plugin.json",
@@ -35,6 +36,7 @@ var targets = []string{
 
 type artifact struct {
 	Archive, Checksum, Unpacked string
+	SHA256                      string
 }
 
 type entry struct {
@@ -46,12 +48,19 @@ type entry struct {
 func main() {
 	root := flag.String("root", ".", "source repository root")
 	version := flag.String("version", "", "release version (vX.Y.Z)")
+	preparePin := flag.Bool("prepare-pin", false, "prepare an archive digest without checking the existing marketplace pin; never edits source")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "package: unexpected arguments")
 		os.Exit(2)
 	}
-	result, err := packageArchive(*root, *version)
+	var result artifact
+	var err error
+	if *preparePin {
+		result, err = buildArchive(*root, *version, true)
+	} else {
+		result, err = packageArchive(*root, *version)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "package:", err)
 		os.Exit(1)
@@ -59,9 +68,17 @@ func main() {
 	fmt.Println("Archive:", result.Archive)
 	fmt.Println("Checksum:", result.Checksum)
 	fmt.Println("Verified plugin:", result.Unpacked)
+	fmt.Println("SHA256:", result.SHA256)
+	if *preparePin {
+		fmt.Println("Pin preparation only: update marketplace source.sha256, then run package without -prepare-pin.")
+	}
 }
 
 func packageArchive(root, version string) (artifact, error) {
+	return buildArchive(root, version, false)
+}
+
+func buildArchive(root, version string, preparePin bool) (artifact, error) {
 	if !versionPattern.MatchString(version) {
 		return artifact{}, errors.New("version must be vX.Y.Z")
 	}
@@ -88,6 +105,13 @@ func packageArchive(root, version string) (artifact, error) {
 	metadata := append(append([]entry(nil), entries...), entry{name: ".claude-plugin/marketplace.json", body: marketplace})
 	if err := validateVersions(metadata, version, true); err != nil {
 		return artifact{}, err
+	}
+	pin, err := marketplacePin(marketplace)
+	if err != nil {
+		return artifact{}, err
+	}
+	if !preparePin && !sha256Pattern.MatchString(pin) {
+		return artifact{}, errors.New("marketplace source.sha256 must contain 64 lowercase hexadecimal characters")
 	}
 	for _, target := range targets {
 		name := binaryName(target)
@@ -145,6 +169,13 @@ func packageArchive(root, version string) (artifact, error) {
 	if err := tmp.Close(); err != nil {
 		return artifact{}, err
 	}
+	digest, err := fileSHA256(tmp.Name())
+	if err != nil {
+		return artifact{}, err
+	}
+	if !preparePin && digest != pin {
+		return artifact{}, errors.New("marketplace source.sha256 does not match the generated archive")
+	}
 	if err := replaceFile(tmp.Name(), archive); err != nil {
 		return artifact{}, err
 	}
@@ -158,25 +189,51 @@ func packageArchive(root, version string) (artifact, error) {
 			return artifact{}, fmt.Errorf("unpacked bytes differ: %s", item.name)
 		}
 	}
-	f, err := os.Open(archive)
-	if err != nil {
+	checksum := archive + ".sha256"
+	text := digest + "  " + filepath.Base(archive) + "\n"
+	if err := atomicWrite(checksum, []byte(text), 0644); err != nil {
 		return artifact{}, err
+	}
+	return artifact{Archive: archive, Checksum: checksum, Unpacked: unpacked, SHA256: digest}, nil
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
 	}
 	hash := sha256.New()
 	_, copyErr := io.Copy(hash, f)
 	closeErr := f.Close()
 	if copyErr != nil {
-		return artifact{}, copyErr
+		return "", copyErr
 	}
 	if closeErr != nil {
-		return artifact{}, closeErr
+		return "", closeErr
 	}
-	checksum := archive + ".sha256"
-	text := hex.EncodeToString(hash.Sum(nil)) + "  " + filepath.Base(archive) + "\n"
-	if err := atomicWrite(checksum, []byte(text), 0644); err != nil {
-		return artifact{}, err
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func marketplacePin(body []byte) (string, error) {
+	var marketplace struct {
+		Plugins []struct {
+			Name   string
+			Source map[string]json.RawMessage
+		}
 	}
-	return artifact{Archive: archive, Checksum: checksum, Unpacked: unpacked}, nil
+	if json.Unmarshal(body, &marketplace) != nil {
+		return "", errors.New("invalid marketplace SHA-256 field")
+	}
+	for _, plugin := range marketplace.Plugins {
+		if plugin.Name == "jev-preflight" {
+			var pin string
+			if field, ok := plugin.Source["sha256"]; ok && json.Unmarshal(field, &pin) != nil {
+				return "", errors.New("invalid marketplace SHA-256 field")
+			}
+			return pin, nil
+		}
+	}
+	return "", errors.New("missing marketplace plugin")
 }
 
 func unpackAndVerify(root, version, archive string) (string, error) {

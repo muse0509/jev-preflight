@@ -10,7 +10,7 @@ import (
 
 func TestDecode(t *testing.T) {
 	dir := t.TempDir()
-	base := map[string]any{"session_id": "session", "prompt_id": "prompt", "cwd": dir, "scratchpad_dir": dir, "hook_event_name": "Stop", "stop_hook_active": false, "unknown": map[string]any{"additive": true}, "prompt": "PRIVATE_PROMPT", "last_assistant_message": "PRIVATE_ASSISTANT", "transcript_path": "DO_NOT_READ"}
+	base := map[string]any{"session_id": "session", "prompt_id": "prompt", "cwd": dir, "scratchpad_dir": dir, "hook_event_name": "Stop", "stop_hook_active": false, "unknown": map[string]any{"additive": true}, "prompt": "PRIVATE_PROMPT", "last_assistant_message": "PRIVATE_ASSISTANT", "transcript_path": "DO_NOT_READ", "session_crons": []map[string]string{{"prompt": "PRIVATE_CRON_PROMPT", "schedule": "PRIVATE_CRON_SCHEDULE", "future_field": "PRIVATE_CRON_BODY"}}}
 	b, _ := json.Marshal(base)
 	in, err := Decode(bytes.NewReader(b), "Stop")
 	if err != nil {
@@ -19,6 +19,9 @@ func TestDecode(t *testing.T) {
 	stored, _ := json.Marshal(in)
 	if strings.Contains(string(stored), "PRIVATE") || strings.Contains(string(stored), "DO_NOT_READ") {
 		t.Fatal("content retained")
+	}
+	if len(in.SessionCrons) != 1 || !in.HasBackgroundWork() {
+		t.Fatal("scheduled wakeup was not recognized")
 	}
 	for _, field := range []string{"session_id", "prompt_id", "cwd", "hook_event_name", "stop_hook_active"} {
 		copy := make(map[string]any)
@@ -31,7 +34,7 @@ func TestDecode(t *testing.T) {
 			t.Errorf("accepted missing %s", field)
 		}
 	}
-	for _, field := range []string{"session_id", "prompt_id", "cwd", "scratchpad_dir", "hook_event_name", "stop_hook_active", "background_tasks"} {
+	for _, field := range []string{"session_id", "prompt_id", "cwd", "scratchpad_dir", "hook_event_name", "stop_hook_active", "background_tasks", "session_crons"} {
 		copy := make(map[string]any)
 		for k, v := range base {
 			copy[k] = v
@@ -55,6 +58,9 @@ func TestDecode(t *testing.T) {
 }
 
 func TestBackgroundAndOutput(t *testing.T) {
+	if (Input{SessionCrons: []struct{}{}}).HasBackgroundWork() {
+		t.Fatal("empty cron list must allow evaluation")
+	}
 	for _, status := range []string{"running", "pending", "future_status", ""} {
 		if !(Input{BackgroundTasks: []BackgroundTask{{Status: status}}}).HasBackgroundWork() {
 			t.Fatalf("not active: %s", status)

@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -13,7 +12,15 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
+
+// RawOutputLimit bounds each Git command's stdout before parsing or redaction.
+// The separate maxDiffBytes setting limits the canonical JSON sent to the API.
+const RawOutputLimit = 4 << 20
+
+// ErrOutputTooLarge means the entire Git result was discarded, never truncated.
+var ErrOutputTooLarge = errors.New("Git output exceeds raw limit")
 
 // Repo contains canonical paths discovered from the working directory.
 type Repo struct {
@@ -154,8 +161,8 @@ func (r *Repo) expandIndex(ctx context.Context, dir string) error {
 func (r *Repo) filterOverrides(ctx context.Context) ([]string, error) {
 	out, err := r.command(ctx, "", nil, "config", "--null", "--name-only", "--get-regexp", `^filter\..*\.(clean|process|required)$`)
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		var exit *commandError
+		if errors.As(err, &exit) && exit.exitCode == 1 {
 			return nil, nil
 		}
 		return nil, errors.New("cannot inspect Git filters")
@@ -338,15 +345,53 @@ func run(ctx context.Context, cwd string, extraEnv, flags []string, args ...stri
 	}
 	cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_NO_LAZY_FETCH=1", "GIT_NO_REPLACE_OBJECTS=1", "LC_ALL=C")
 	cmd.Env = append(cmd.Env, extraEnv...)
-	// Never return stderr: Git errors can contain filenames or filtered source.
-	out, err := cmd.Output()
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, fmt.Errorf("Git operation failed: %w", err)
+	return boundedOutput(ctx, cmd, RawOutputLimit)
+}
+
+type commandError struct{ exitCode int }
+
+func (*commandError) Error() string { return "Git operation failed" }
+
+// boundedOutput always waits for the child, including after overflow or cancel.
+// Run routes nil stderr to the null device and never captures Git diagnostics.
+func boundedOutput(ctx context.Context, cmd *exec.Cmd, limit int) ([]byte, error) {
+	output := &limitedOutput{limit: limit, kill: func() { _ = cmd.Process.Kill() }}
+	cmd.Stdout = output
+	cmd.Stderr = nil
+	// A descendant holding the stdout pipe must not prevent child reclamation.
+	cmd.WaitDelay = time.Second
+	err := cmd.Run()
+	if output.exceeded {
+		return nil, ErrOutputTooLarge
 	}
-	return out, nil
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if err != nil {
+		code := -1
+		if cmd.ProcessState != nil {
+			code = cmd.ProcessState.ExitCode()
+		}
+		return nil, &commandError{exitCode: code}
+	}
+	return output.data, nil
+}
+
+type limitedOutput struct {
+	data     []byte
+	limit    int
+	exceeded bool
+	kill     func()
+}
+
+func (out *limitedOutput) Write(p []byte) (int, error) {
+	if len(p) > out.limit-len(out.data) {
+		out.exceeded = true
+		out.kill()
+		return 0, ErrOutputTooLarge
+	}
+	out.data = append(out.data, p...)
+	return len(p), nil
 }
 
 func (r *Repo) privatePath(path string) (string, error) {

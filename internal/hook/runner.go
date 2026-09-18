@@ -58,7 +58,7 @@ func (r Runner) Run(ctx context.Context, input io.Reader, event string) Output {
 			}
 		}
 	}()
-	// An in-flight task may still edit files. Keep the original turn baseline.
+	// In-flight tasks and scheduled wakeups keep the original turn baseline.
 	if event == "Stop" && in.HasBackgroundWork() {
 		keep = true
 		return Output{}
@@ -110,6 +110,9 @@ func (r Runner) Run(ctx context.Context, input io.Reader, event string) Output {
 		return r.failure(store, "snapshot")
 	}
 	changes, err := repo.Diff(ctx, store.SnapshotPath(), st.BaselineTree, current)
+	if errors.Is(err, gitstate.ErrOutputTooLarge) {
+		return r.failure(store, "diff_too_large")
+	}
 	if err != nil {
 		return r.failure(store, "diff")
 	}

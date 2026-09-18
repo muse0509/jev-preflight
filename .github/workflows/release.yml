@@ -45,22 +45,20 @@ jobs:
       - name: Build and verify universal plugin
         shell: bash
         run: |
-          make cross-build
-          go run ./scripts/package -version "$RELEASE_VERSION"
+          # Strict packaging checks the committed marketplace SHA before producing release assets.
+          make package VERSION="$RELEASE_VERSION"
+          (cd dist && sha256sum -c "jev-preflight-plugin-$RELEASE_VERSION.zip.sha256")
           plugin_root="$PWD/dist/unpacked/jev-preflight-plugin-$RELEASE_VERSION"
           test "$(CLAUDE_PLUGIN_ROOT="$plugin_root" bash "$plugin_root/scripts/run" version)" = "jev-preflight ${RELEASE_VERSION#v}"
-          if command -v claude >/dev/null 2>&1; then
-            claude plugin validate "$plugin_root" --strict
-          else
-            echo 'SKIP: Claude Code CLI unavailable'
-          fi
+          make plugin-validate
+          make plugin-validate PLUGIN_DIR="$plugin_root"
       - name: Prepare release notes
         shell: bash
         run: |
           cat > dist/release-notes.md <<'NOTES'
           Public Beta: a turn-scoped semantic risk router for Claude Code.
 
-          The universal plugin zip contains Darwin, Linux, and Windows binaries for amd64 and arm64. Verify the zip using its matching .sha256 asset.
+          The universal plugin zip contains Darwin, Linux, and Windows binaries for amd64 and arm64. The marketplace pins its SHA-256 for installer verification. The matching .sha256 asset also supports manual verification.
 
           Requires Claude Code >= 2.1.257, Git, Bash (Git for Windows on Windows), and a TypeSafe API key. The plugin starts disabled. Enabling it sends selected, best-effort-redacted diffs directly to TypeSafe. Scores are investigation priorities, not proof of defects; the default threshold is not calibrated.
 

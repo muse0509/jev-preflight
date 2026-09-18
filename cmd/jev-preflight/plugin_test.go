@@ -59,6 +59,20 @@ func TestPluginContracts(t *testing.T) {
 
 func TestLauncherMapping(t *testing.T) {
 	bash := launcherBash(t)
+	const argument = "space ' \" ; $(printf unexpected)"
+	const harness = `
+test_system=$1
+test_arch=$2
+shift 2
+uname() {
+  case "$1" in
+    -s) printf '%s\n' "$test_system" ;;
+    -m) printf '%s\n' "$test_arch" ;;
+    *) return 1 ;;
+  esac
+}
+source "$1" "${@:2}"
+`
 	source, err := os.ReadFile(filepath.Join("..", "..", "scripts", "run"))
 	if err != nil {
 		t.Fatal(err)
@@ -71,24 +85,14 @@ func TestLauncherMapping(t *testing.T) {
 		t.Run(tt.target, func(t *testing.T) {
 			base := t.TempDir()
 			root := filepath.Join(base, "plugin space ' $(no-execution)")
-			bin := filepath.Join(base, "bin")
-			write := func(name, body string) {
-				t.Helper()
-				if err := os.MkdirAll(filepath.Dir(name), 0700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(name, []byte(body), 0700); err != nil {
-					t.Fatal(err)
-				}
-			}
 			launcher := filepath.Join(root, "scripts", "run")
-			write(launcher, string(source))
-			write(filepath.Join(bin, "uname"), "#!/bin/bash\nif [[ \"$1\" == -s ]]; then printf '%s' \"$TEST_SYSTEM\"; else printf '%s' \"$TEST_ARCH\"; fi\n")
+			writeLauncherFile(t, launcher, source)
 			dev := filepath.Join(root, ".tmp", "runtime", tt.target, "jev-preflight"+tt.suffix)
 			release := filepath.Join(root, "scripts", "runtime", tt.target, "jev-preflight"+tt.suffix)
 			invoke := func(system, arch string) (string, string, error) {
-				cmd := exec.Command(bash, launcher, "hook", "stop", "space ; $(literal)")
-				cmd.Env = append(os.Environ(), "CLAUDE_PLUGIN_ROOT="+root, "TEST_SYSTEM="+system, "TEST_ARCH="+arch, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+				// A sourced function avoids executable lookup and Windows PATH rules.
+				cmd := exec.Command(bash, "--noprofile", "--norc", "-c", harness, "launcher-test", system, arch, filepath.ToSlash(launcher), "hook", "stop", argument)
+				cmd.Env = append(os.Environ(), "HOME="+base, "BASH_ENV=", "CLAUDE_PLUGIN_ROOT="+filepath.ToSlash(root))
 				var stderr strings.Builder
 				cmd.Stderr = &stderr
 				b, err := cmd.Output()
@@ -97,13 +101,13 @@ func TestLauncherMapping(t *testing.T) {
 			if out, diag, err := invoke(tt.system, tt.arch); err != nil || out != "" || !strings.Contains(diag, "unavailable") {
 				t.Fatalf("missing runtime: %q %q %v", out, diag, err)
 			}
-			write(dev, "#!/bin/bash\nprintf 'dev:%s|%s|%s' \"$1\" \"$2\" \"$3\"\n")
-			if out, _, err := invoke(tt.system, tt.arch); err != nil || out != "dev:hook|stop|space ; $(literal)" {
-				t.Fatalf("fallback: %q %v", out, err)
+			writeLauncherFile(t, dev, []byte("#!/bin/bash\nprintf 'dev:%s|%s|%s' \"$1\" \"$2\" \"$3\"\n"))
+			if out, diag, err := invoke(tt.system, tt.arch); err != nil || out != "dev:hook|stop|"+argument || diag != "" {
+				t.Fatalf("fallback: %q %q %v", out, diag, err)
 			}
-			write(release, "#!/bin/bash\nprintf 'release:%s|%s|%s' \"$1\" \"$2\" \"$3\"\n")
-			if out, _, err := invoke(tt.system, tt.arch); err != nil || out != "release:hook|stop|space ; $(literal)" {
-				t.Fatalf("release: %q %v", out, err)
+			writeLauncherFile(t, release, []byte("#!/bin/bash\nprintf 'release:%s|%s|%s' \"$1\" \"$2\" \"$3\"\n"))
+			if out, diag, err := invoke(tt.system, tt.arch); err != nil || out != "release:hook|stop|"+argument || diag != "" {
+				t.Fatalf("release: %q %q %v", out, diag, err)
 			}
 			for _, unsupported := range [][2]string{{"FreeBSD", "x86_64"}, {"Linux", "riscv64"}} {
 				if out, diag, err := invoke(unsupported[0], unsupported[1]); err != nil || out != "" || !strings.Contains(diag, "unsupported") {
@@ -111,6 +115,96 @@ func TestLauncherMapping(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLauncherNativeRuntime(t *testing.T) {
+	bash := launcherBash(t)
+	source, err := os.ReadFile(filepath.Join("..", "..", "scripts", "run"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.ReadFile(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "plugin space ' $(no-execution)")
+	launcher := filepath.Join(root, "scripts", "run")
+	writeLauncherFile(t, launcher, source)
+	name := "jev-preflight"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	target := runtime.GOOS + "-" + runtime.GOARCH
+	dev := filepath.Join(root, ".tmp", "runtime", target, name)
+	release := filepath.Join(root, "scripts", "runtime", target, name)
+	args := []string{"hook", "stop", "space ' \" ; $(printf unexpected)"}
+	for _, path := range []string{dev, release} {
+		writeLauncherFile(t, path, binary)
+		cmd := exec.Command(bash, append([]string{"--noprofile", "--norc", launcher, "-test.run=^TestLauncherProcess$", "--"}, args...)...)
+		// Keep native paths here to exercise Git Bash launching a Windows .exe.
+		cmd.Env = append(os.Environ(), "HOME="+filepath.Dir(root), "BASH_ENV=", "CLAUDE_PLUGIN_ROOT="+root, "JEV_PREFLIGHT_LAUNCHER_HELPER=1")
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		output, err := cmd.Output()
+		if err != nil || stderr.Len() != 0 {
+			t.Fatalf("native launcher: %q %v", stderr.String(), err)
+		}
+		var result struct {
+			Executable string
+			Args       []string
+		}
+		if err := json.Unmarshal(output, &result); err != nil {
+			t.Fatalf("native runtime did not return arguments: %v", err)
+		}
+		wantFile, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotFile, err := os.Stat(result.Executable)
+		if err != nil || !os.SameFile(wantFile, gotFile) || len(result.Args) != len(args) {
+			t.Fatalf("native runtime selection or argument count: %+v", result)
+		}
+		for i := range args {
+			if result.Args[i] != args[i] {
+				t.Fatalf("native runtime argument %d changed", i)
+			}
+		}
+	}
+}
+
+func TestLauncherProcess(t *testing.T) {
+	if os.Getenv("JEV_PREFLIGHT_LAUNCHER_HELPER") != "1" {
+		return
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		os.Exit(1)
+	}
+	if len(os.Args) < 3 || os.Args[2] != "--" {
+		os.Exit(1)
+	}
+	err = json.NewEncoder(os.Stdout).Encode(struct {
+		Executable string
+		Args       []string
+	}{executable, os.Args[3:]})
+	if err != nil {
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+func writeLauncherFile(t *testing.T, name string, body []byte) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(name), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(name, body, 0700); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -132,11 +226,11 @@ func launcherBash(t *testing.T) string {
 				return candidate
 			}
 		}
-		t.Skip("Git for Windows Bash unavailable; WSL is not a supported launcher runtime")
+		t.Fatal("Git for Windows Bash unavailable; launcher tests require Git Bash, not WSL")
 	}
 	bash, err := exec.LookPath("bash")
 	if err != nil {
-		t.Skip("Bash unavailable; launcher requires Bash")
+		t.Fatal("Bash unavailable; launcher tests require Bash")
 	}
 	return bash
 }

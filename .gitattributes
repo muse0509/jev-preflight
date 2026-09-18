@@ -4,3 +4,6 @@ scripts/run text eol=lf
 *.json text eol=lf
 *.yml text eol=lf
 Makefile text eol=lf
+*.md text eol=lf
+LICENSE text eol=lf
+.go-version text eol=lf
