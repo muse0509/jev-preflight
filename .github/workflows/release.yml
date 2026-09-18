@@ -1,0 +1,105 @@
+name: Public Beta release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  platform-tests:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: false
+      - run: go test ./...
+  build:
+    needs: platform-tests
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: false
+      - name: Validate tag and quality
+        shell: bash
+        run: |
+          [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          make check
+          go test -race ./...
+          git diff --check
+      - name: Build and verify universal plugin
+        shell: bash
+        run: |
+          make cross-build
+          go run ./scripts/package -version "$RELEASE_VERSION"
+          plugin_root="$PWD/dist/unpacked/jev-preflight-plugin-$RELEASE_VERSION"
+          test "$(CLAUDE_PLUGIN_ROOT="$plugin_root" bash "$plugin_root/scripts/run" version)" = "jev-preflight ${RELEASE_VERSION#v}"
+          if command -v claude >/dev/null 2>&1; then
+            claude plugin validate "$plugin_root" --strict
+          else
+            echo 'SKIP: Claude Code CLI unavailable'
+          fi
+      - name: Prepare release notes
+        shell: bash
+        run: |
+          cat > dist/release-notes.md <<'NOTES'
+          Public Beta: a turn-scoped semantic risk router for Claude Code.
+
+          The universal plugin zip contains Darwin, Linux, and Windows binaries for amd64 and arm64. Verify the zip using its matching .sha256 asset.
+
+          Requires Claude Code >= 2.1.257, Git, Bash (Git for Windows on Windows), and a TypeSafe API key. The plugin starts disabled. Enabling it sends selected, best-effort-redacted diffs directly to TypeSafe. Scores are investigation priorities, not proof of defects; the default threshold is not calibrated.
+
+          See README for installation, configuration, privacy limitations, and verification status.
+          NOTES
+      - uses: actions/upload-artifact@v7
+        with:
+          name: universal-plugin
+          path: |
+            dist/jev-preflight-plugin-*.zip
+            dist/jev-preflight-plugin-*.zip.sha256
+            dist/release-notes.md
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: universal-plugin
+          path: dist
+      - name: Verify downloaded archive checksum
+        working-directory: dist
+        shell: bash
+        run: sha256sum -c "jev-preflight-plugin-$RELEASE_VERSION.zip.sha256"
+      - name: Publish beta assets for the existing tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          gh release create "$RELEASE_VERSION" \
+            "dist/jev-preflight-plugin-$RELEASE_VERSION.zip" \
+            "dist/jev-preflight-plugin-$RELEASE_VERSION.zip.sha256" \
+            --verify-tag --prerelease --latest=false \
+            --title "$RELEASE_VERSION — Public Beta" \
+            --notes-file dist/release-notes.md

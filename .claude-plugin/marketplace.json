@@ -1,0 +1,16 @@
+{
+  "name": "jev-preflight",
+  "owner": {"name": "jev-preflight contributors"},
+  "plugins": [
+    {
+      "name": "jev-preflight",
+      "version": "0.1.0",
+      "description": "Public Beta: turn-scoped semantic risk routing for Claude Code.",
+      "source": {
+        "source": "archive",
+        "url": "https://github.com/muse0509/jev-preflight/releases/download/v0.1.0/jev-preflight-plugin-v0.1.0.zip"
+      },
+      "defaultEnabled": false
+    }
+  ]
+}

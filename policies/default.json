@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "questions": [
+    {
+      "id": "behavior_regression",
+      "type": "noul",
+      "instructions": "Does this diff introduce a plausible unintended change to existing observable behavior that warrants investigation?",
+      "criteria": {
+        "true": "The changed logic suggests an unintended behavioral regression worth checking in surrounding code and tests.",
+        "false": "The diff gives no meaningful indication of an unintended behavioral regression."
+      }
+    },
+    {
+      "id": "auth_boundary",
+      "type": "noul",
+      "instructions": "Does this diff plausibly weaken an authentication or authorization boundary enough to warrant investigation?",
+      "criteria": {
+        "true": "A changed access check or trust boundary may permit an unauthorized operation.",
+        "false": "The diff gives no meaningful indication of weakened access control."
+      }
+    },
+    {
+      "id": "input_validation",
+      "type": "noul",
+      "instructions": "Does this diff plausibly allow invalid or untrusted input to reach an unsafe operation without adequate validation?",
+      "criteria": {
+        "true": "A changed input path may accept unsafe values that merit investigation.",
+        "false": "The diff gives no meaningful indication of inadequate input validation."
+      }
+    },
+    {
+      "id": "data_integrity",
+      "type": "noul",
+      "instructions": "Does this diff plausibly cause unintended loss or corruption of persisted data?",
+      "criteria": {
+        "true": "Changed writes, migrations, or transaction behavior may damage persisted data.",
+        "false": "The diff gives no meaningful indication of unintended data loss or corruption."
+      }
+    },
+    {
+      "id": "error_handling",
+      "type": "noul",
+      "instructions": "Does this diff plausibly mishandle a failure in a way that warrants investigation?",
+      "criteria": {
+        "true": "A changed failure path may hide an error, return an incorrect result, or prevent recovery.",
+        "false": "The diff gives no meaningful indication of mishandled failures."
+      }
+    },
+    {
+      "id": "compatibility",
+      "type": "noul",
+      "instructions": "Does this diff plausibly break an existing external interface or supported consumer contract?",
+      "criteria": {
+        "true": "A changed interface, format, configuration, or dependency may break supported consumers.",
+        "false": "The diff gives no meaningful indication of a broken compatibility contract."
+      }
+    },
+    {
+      "id": "lifecycle",
+      "type": "noul",
+      "instructions": "Does this diff plausibly mishandle a resource or operation lifecycle in a way that warrants investigation?",
+      "criteria": {
+        "true": "Changed acquisition, cleanup, cancellation, or concurrency may leave an operation or resource in an invalid state.",
+        "false": "The diff gives no meaningful indication of a lifecycle defect."
+      }
+    },
+    {
+      "id": "regression_tests",
+      "type": "noul",
+      "instructions": "Does a changed behavior appear to lack a meaningful regression test that warrants investigation?",
+      "criteria": {
+        "true": "A consequential changed behavior appears insufficiently tested and merits checking existing coverage.",
+        "false": "The diff gives no meaningful indication that consequential changed behavior lacks regression coverage."
+      }
+    }
+  ]
+}
