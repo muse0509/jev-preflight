@@ -20,7 +20,9 @@ fixture_git() {
     for name in ${!GIT_@}; do unset "$name"; done
     export LC_ALL=C GIT_CONFIG_NOSYSTEM=1
     export GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0
-    git -C "$fixture/repo" "$@"
+    # Native Git inherits a valid Windows cwd without MSYS argument conversion.
+    cd -- "$fixture/repo" || exit 1
+    git "$@"
   )
 }
 

@@ -307,6 +307,17 @@ repository root and a fresh extraction of this final archive. The temporary
 extraction and reproduction source copies were removed. These local checks are
 separate from the owner's earlier manual sessions and from GitHub Actions.
 
+The first finalization commit, `61fae0d`, had one failure in each of
+[PR CI](https://github.com/muse0509/jev-preflight/actions/runs/35433242296) and
+[push CI](https://github.com/muse0509/jev-preflight/actions/runs/35433240229): the
+new fixture lifecycle test passed a POSIX absolute path to native Windows Git.
+The other ten jobs passed, including package/checksum, and the Windows runtime
+and launcher tests themselves passed. The fixture helper now changes directory
+in Bash before invoking Git with relative arguments; its regression test
+disables automatic MSYS path conversion. No assertion, job, or product behavior
+was relaxed or removed. This developer-only correction leaves the archive SHA
+unchanged. A new run must verify the corrected commit.
+
 CI for this finalization is pending at preparation time. The earlier green runs
 cover only their recorded baseline. Check the
 [current branch Actions runs](https://github.com/muse0509/jev-preflight/actions?query=branch%3Areview%2Fv0.1.0)

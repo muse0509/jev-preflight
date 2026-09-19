@@ -115,6 +115,9 @@ func TestSmokeFixtureLifecycleAndMetadata(t *testing.T) {
 	}
 	t.Setenv("GIT_DIR", outside)
 	t.Setenv("GIT_INDEX_FILE", filepath.Join(outside, "index"))
+	// Git Bash must not need automatic /c/... argument conversion for native Git.
+	t.Setenv("MSYS_NO_PATHCONV", "1")
+	t.Setenv("MSYS2_ARG_CONV_EXCL", "*")
 	fixture := nativeFixturePath(t, fixtureCommand(t, script, true, filepath.Join(root, "source")))
 	relative, err := filepath.Rel(filepath.Join(root, ".tmp"), fixture)
 	if err != nil || filepath.Dir(relative) != "." || !strings.HasPrefix(relative, "hook-smoke.") {
