@@ -1,5 +1,6 @@
 *.sh text eol=lf
 scripts/run text eol=lf
+scripts/prepare-hook-smoke text eol=lf
 *.go text eol=lf
 *.json text eol=lf
 *.yml text eol=lf
