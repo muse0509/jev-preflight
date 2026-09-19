@@ -1,0 +1,101 @@
+#!/bin/bash
+# Prepare or verify a disposable fixture; never starts Claude or calls an API.
+set -euo pipefail
+
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P) || exit 1
+owner='jev-preflight synthetic hook smoke v1'
+
+metadata() {
+  (
+    cd -- "$1/repo" || exit 1
+    find .git -type f -print | LC_ALL=C sort | while IFS= read -r path; do
+      digest=$(fixture_git hash-object --no-filters -- "$path") || exit 1
+      printf '%s %s\n' "$digest" "$path"
+    done
+  )
+}
+
+fixture_git() {
+  (
+    for name in ${!GIT_@}; do unset "$name"; done
+    export LC_ALL=C GIT_CONFIG_NOSYSTEM=1
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0
+    # Native Git inherits a valid Windows cwd without MSYS argument conversion.
+    cd -- "$fixture/repo" || exit 1
+    git "$@"
+  )
+}
+
+owned_fixture() {
+  local fixture
+  fixture=$(cd -- "$1" && pwd -P) || return 1
+  case "$fixture" in
+    "$root"/.tmp/hook-smoke.*) ;;
+    *) printf '%s\n' 'Refusing a path outside the smoke fixture directory.' >&2; return 1 ;;
+  esac
+  [[ -f "$fixture/.smoke-owner" && ! -L "$fixture/.smoke-owner" ]] || return 1
+  [[ "$(cat -- "$fixture/.smoke-owner")" == "$owner" ]] || return 1
+  printf '%s\n' "$fixture"
+}
+
+if [[ "${1:-}" == '--verify' ]]; then
+  [[ $# == 2 ]] || exit 1
+  fixture=$(owned_fixture "$2") || exit 1
+  metadata "$fixture" > "$fixture/metadata.after" || exit 1
+  if ! cmp -s -- "$fixture/metadata.before" "$fixture/metadata.after"; then
+    printf '%s\n' 'Git metadata bytes changed: FAIL.' >&2
+    exit 1
+  fi
+  if cmp -s -- "$fixture/original.go" "$fixture/repo/check.go"; then
+    printf '%s\n' 'Synthetic file was not edited: NOT EXERCISED.' >&2
+    exit 1
+  fi
+  printf '%s\n' 'Synthetic file changed; Git metadata file names and bytes are unchanged.'
+  exit 0
+fi
+
+if [[ "${1:-}" == '--cleanup' ]]; then
+  [[ $# == 2 ]] || exit 1
+  fixture=$(owned_fixture "$2") || exit 1
+  rm -rf -- "$fixture" || exit 1
+  printf '%s\n' 'Disposable fixture removed.'
+  exit 0
+fi
+
+if [[ $# != 1 ]]; then
+  printf '%s\n' 'Usage: bash scripts/prepare-hook-smoke UNPACKED_PLUGIN' \
+    '       bash scripts/prepare-hook-smoke --verify FIXTURE' \
+    '       bash scripts/prepare-hook-smoke --cleanup FIXTURE' >&2
+  exit 1
+fi
+
+plugin=$(cd -- "$1" && pwd -P) || exit 1
+[[ -f "$plugin/.claude-plugin/plugin.json" && -f "$plugin/hooks/hooks.json" && -f "$plugin/scripts/run" ]] || exit 1
+[[ -d "$plugin/scripts/runtime" ]] || exit 1
+links=$(find "$plugin" -type l -print) || exit 1
+[[ -z "$links" ]] || exit 1
+[[ ! -L "$root/.tmp" ]] || exit 1
+mkdir -p -- "$root/.tmp" || exit 1
+fixture=$(mktemp -d "$root/.tmp/hook-smoke.XXXXXXXX") || exit 1
+complete=false
+trap 'if [[ "$complete" != true ]]; then rm -rf -- "$fixture"; fi' EXIT
+chmod 700 "$fixture" || exit 1
+printf '%s\n' "$owner" > "$fixture/.smoke-owner" || exit 1
+mkdir -- "$fixture/repo" "$fixture/plugin" || exit 1
+cp -R -- "$plugin/." "$fixture/plugin/" || exit 1
+cat > "$fixture/repo/check.go" <<'SYNTHETIC' || exit 1
+package synthetic
+
+func allowed(owner, actor string) bool {
+	return owner == actor
+}
+SYNTHETIC
+cp -- "$fixture/repo/check.go" "$fixture/original.go" || exit 1
+
+fixture_git init --quiet --initial-branch=main --template= || exit 1
+fixture_git -c core.autocrlf=false add -- check.go || exit 1
+fixture_git -c user.name='Synthetic smoke' -c user.email='smoke@example.invalid' \
+  -c commit.gpgSign=false commit --quiet -m 'Synthetic fixture' || exit 1
+metadata "$fixture" > "$fixture/metadata.before" || exit 1
+complete=true
+printf '%s\n' "$fixture"

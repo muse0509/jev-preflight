@@ -1,0 +1,17 @@
+{
+  "name": "jev-preflight",
+  "version": "0.1.0",
+  "description": "Public Beta: turn-scoped semantic risk routing with one evidence-based reinspection.",
+  "author": {"name": "jev-preflight contributors"},
+  "repository": "https://github.com/muse0509/jev-preflight",
+  "license": "MIT",
+  "defaultEnabled": false,
+  "userConfig": {
+    "typesafe_api_key": {
+      "type": "string",
+      "title": "TypeSafe API key",
+      "description": "Enabling sends selected, best-effort-redacted diffs directly to TypeSafe. Alternatively use TYPESAFE_API_KEY in the environment.",
+      "sensitive": true
+    }
+  }
+}

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Claude supplies the plugin root as an environment value, never shell code.
+set -u
+shopt -s execfail
+
+if [[ -z "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
+  printf '%s\n' 'jev-preflight: plugin root unavailable; skipped.' >&2
+  exit 0
+fi
+
+case "$(uname -s)" in
+  Darwin) platform=darwin ;;
+  Linux) platform=linux ;;
+  MINGW*|MSYS*|CYGWIN*) platform=windows ;;
+  *) printf '%s\n' 'jev-preflight: unsupported platform; skipped.' >&2; exit 0 ;;
+esac
+case "$(uname -m)" in
+  x86_64|amd64|AMD64) architecture=amd64 ;;
+  arm64|aarch64|ARM64) architecture=arm64 ;;
+  *) printf '%s\n' 'jev-preflight: unsupported architecture; skipped.' >&2; exit 0 ;;
+esac
+
+suffix=''
+if [[ "$platform" == windows ]]; then suffix='.exe'; fi
+binary="${CLAUDE_PLUGIN_ROOT}/scripts/runtime/${platform}-${architecture}/jev-preflight${suffix}"
+if [[ ! -f "$binary" ]]; then
+  binary="${CLAUDE_PLUGIN_ROOT}/.tmp/runtime/${platform}-${architecture}/jev-preflight${suffix}"
+fi
+if [[ ! -x "$binary" ]]; then
+  printf '%s\n' 'jev-preflight: runtime binary unavailable; skipped.' >&2
+  exit 0
+fi
+exec "$binary" "$@"
+printf '%s\n' 'jev-preflight: runtime could not start; skipped.' >&2
+exit 0
