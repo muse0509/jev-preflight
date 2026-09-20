@@ -328,3 +328,72 @@ The remaining release checks are the final revision's green CI and the separate
 post-publication marketplace installation smoke; see [releasing](releasing.md).
 The manual observation limits above remain documented limitations. Publication,
 merge, tagging, and Release creation still require separate authorization.
+
+## Public v0.1.0 release and marketplace smoke: 2026-09-19 (JST)
+
+The remaining v0.1.0 release checks were completed after the finalization record
+above. PR #1 was merged into `main` as commit
+`8b2e7308b11ea7b58683621cebaa61bff31a0429`, and the annotated tag `v0.1.0`
+points to that commit.
+
+| Evidence | Result |
+| --- | --- |
+| [Tag CI](https://github.com/muse0509/jev-preflight/actions/runs/35434444914) | All 11 jobs passed |
+| [Release workflow](https://github.com/muse0509/jev-preflight/actions/runs/35434444900) | All platform, build, and publish jobs passed |
+| [GitHub Release](https://github.com/muse0509/jev-preflight/releases/tag/v0.1.0) | Immutable public prerelease with the plugin zip and checksum sidecar |
+| Published archive SHA-256 | `a3463c74c558a2cf436bce165e476d1a163f10c3cdaab8525d0064da5e9487a8` |
+
+The owner then exercised the public user path rather than `--plugin-dir` or a
+local archive. Claude Code cloned `muse0509/jev-preflight` over HTTPS, validated
+and updated the marketplace, installed `jev-preflight@jev-preflight` version
+`0.1.0` at user scope, and enabled it. The install reported no archive,
+checksum, or manifest error.
+
+Claude Code **2.1.267** loaded the installed marketplace plugin in two fresh,
+disposable Git repositories containing only synthetic Go code. No real project
+source was used in either session.
+
+| Observed summary field | Public no-key | Public key-enabled |
+| --- | ---: | ---: |
+| plugin_loaded | true | true |
+| read_calls / read_successes | 1 / 1 | 2 / 2 |
+| edit_calls / edit_successes | 1 / 1 | 1 / 1 |
+| user_prompt_submit_started / completed | 1 / 1 | 1 / 1 |
+| stop_started / stop_completed | 1 / 1 | 2 / 2 |
+| continuation_outputs | 0 | 1 |
+| api_key_notices | 1 | 0 |
+| jev_feedback_outputs | 0 | 1 |
+| claude_result_success | true | true |
+| Harness verdict | `no_key_fail_open=PASS` | `continuation_check=PASS` |
+
+The no-key session used a behavior-preserving edit from
+`return owner == actor` to `return actor == owner`. It completed without Jev
+feedback or a continuation and emitted the expected missing-key notice. The
+key-enabled session used the synthetic authorization mutation
+`return owner == actor` to `return true`. It received Jev feedback, performed
+exactly one continuation, and then completed without a second edit.
+
+For the key-enabled session, the API key was read silently from `/dev/tty` in a
+child Bash process, exported only inside that process, and unset on exit. It was
+not placed in a prompt, command argument, repository, or captured log.
+
+The hook event stream did not expose TypeSafe wire request counts. The expected
+product behavior for the key-enabled Stop is one POST, no GET, and no
+application retry, but that expectation was not measured by this smoke test.
+The following fields therefore remain **UNOBSERVED** rather than being promoted
+to PASS:
+
+```text
+jev_requests=UNOBSERVED
+baseline=UNOBSERVED
+git_cleanup=UNOBSERVED
+stop_hook_active=UNOBSERVED
+hook_attribution=UNOBSERVED
+```
+
+Offline tests remain the separate evidence for those internal invariants. With
+the published artifact installed through the documented marketplace path, both
+the no-key fail-open path and the key-enabled single-continuation path have now
+passed. This completes the v0.1.0 Public Beta release gates. Later changes must
+use a new version and must not rewrite the immutable v0.1.0 tag or release
+assets.
